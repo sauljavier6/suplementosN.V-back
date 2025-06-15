@@ -11,18 +11,68 @@ app.use(express.json());
 // 🔹 Nueva Ruta: Obtener detalles de un producto
 app.get('/productos/:id', async (req, res) => {
   const { id } = req.params;
+
+  const getInventoryByVariantId = async (variantId) => {
+    try {
+      const response = await fetch(
+        `${process.env.LOYVERSE_API}/inventory?variant_ids=${variantId}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
+            Accept: 'application/json',
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      const totalStock = data.inventory_levels.reduce(
+        (acc, level) => acc + (level.in_stock || 0),
+        0
+      );
+
+      return totalStock;
+    } catch (error) {
+      console.error('Error al obtener inventario:', error.message);
+      return null;
+    }
+  };
+
   try {
     const response = await axios.get(`${process.env.LOYVERSE_API}/items/${id}`, {
       headers: {
         Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
       },
     });
-    res.json(response.data);
+
+    const item = response.data;
+
+    const variantsWithInventory = await Promise.all(
+      item.variants.map(async (variant) => {
+        const totalStock = await getInventoryByVariantId(variant.variant_id);
+        return {
+          ...variant,
+          total_stock: totalStock,
+        };
+      })
+    );
+
+    res.json({
+      ...item,
+      variants: variantsWithInventory,
+    });
+
   } catch (error) {
     console.error(`Error al obtener producto con ID ${id}:`, error.message);
     res.status(500).json({ error: 'No se pudo obtener el producto' });
   }
 });
+
 
 // Ruta: Obtener productos
 app.get('/productos', async (req, res) => {
