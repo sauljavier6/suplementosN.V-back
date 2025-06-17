@@ -82,12 +82,74 @@ app.get('/productos', async (req, res) => {
         Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
       },
     });
-    res.json(response.data);
+
+    const todosLosProductos = response.data.items;
+
+    // Obtener el stock para cada producto filtrado (en paralelo)
+    const productosConStock = await Promise.all(
+      todosLosProductos.map(async (producto) => {
+        // Obtener el stock de todas las variantes del producto
+        const variantsWithStock = await Promise.all(
+          producto.variants.map(async (variant) => {
+            const stock = await getStockByVariantId(variant.variant_id);
+            return {
+              ...variant,
+              total_stock: stock, // stock individual por variante
+            };
+          })
+        );
+
+        // Sumar todos los stocks para obtener el total del producto
+        const totalStock = variantsWithStock.reduce((acc, variant) => acc + (variant.total_stock || 0), 0);
+
+        // Retornar el producto con sus variantes actualizadas y total_stock
+        return {
+          ...producto,
+          variants: variantsWithStock,
+          total_stock: totalStock, // suma de todos los stocks
+        };
+      })
+    );
+
+    
+    res.json(productosConStock);
   } catch (error) {
     console.error('Error al obtener productos:', error.message);
     res.status(500).json({ error: 'No se pudieron obtener los productos' });
   }
 });
+
+  const getStockByVariantId = async (variantId) => {
+  try {
+    const response = await fetch(
+      `${process.env.LOYVERSE_API}/inventory?variant_ids=${variantId}`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
+          Accept: 'application/json',
+        },
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    // Sumamos todos los in_stock
+    const totalStock = data.inventory_levels.reduce(
+      (acc, level) => acc + (level.in_stock || 0),
+      0
+    );
+
+    return totalStock;
+  } catch (error) {
+    console.error('Error al obtener inventario:', error.message);
+    return 0; // Retornamos 0 si falla
+  }
+};
 
 
 // Ruta: Obtener productos filtrados por categoría
@@ -108,13 +170,40 @@ app.get('/catalogo/:categoria', async (req, res) => {
     // Filtrar productos por category_id
     const productosFiltrados = todosLosProductos.filter(producto => producto.category_id === categoria);
 
+    
+    // Obtener el stock para cada producto filtrado (en paralelo)
+    const productosConStock = await Promise.all(
+      productosFiltrados.map(async (producto) => {
+        // Obtener el stock de todas las variantes del producto
+        const variantsWithStock = await Promise.all(
+          producto.variants.map(async (variant) => {
+            const stock = await getStockByVariantId(variant.variant_id);
+            return {
+              ...variant,
+              total_stock: stock,
+            };
+          })
+        );
+
+        // Sumar todos los stocks para obtener el total del producto
+        const totalStock = variantsWithStock.reduce((acc, variant) => acc + (variant.total_stock || 0), 0);
+
+        // Retornar el producto con sus variantes actualizadas y total_stock
+        return {
+          ...producto,
+          variants: variantsWithStock,
+          total_stock: totalStock, // suma de todos los stocks
+        };
+      })
+    );
+
     // Calcular paginación
-    const total = productosFiltrados.length;
+    const total = productosConStock.length;
     const totalPages = Math.ceil(total / limit);
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + limit;
 
-    const productosPaginados = productosFiltrados.slice(startIndex, endIndex);
+    const productosPaginados = productosConStock.slice(startIndex, endIndex);
 
     // Respuesta con info de paginación
     res.json({
@@ -148,13 +237,40 @@ app.get('/busqueda/:busqueda', async (req, res) => {
     // Filtrar productos por category_id
     const productosFiltrados = todosLosProductos.filter(producto =>producto.item_name.toLowerCase().includes(busqueda.toLowerCase()));
 
+    
+    // Obtener el stock para cada producto filtrado (en paralelo)
+    const productosConStock = await Promise.all(
+      productosFiltrados.map(async (producto) => {
+        // Obtener el stock de todas las variantes del producto
+        const variantsWithStock = await Promise.all(
+          producto.variants.map(async (variant) => {
+            const stock = await getStockByVariantId(variant.variant_id);
+            return {
+              ...variant,
+              total_stock: stock,
+            };
+          })
+        );
+
+        // Sumar todos los stocks para obtener el total del producto
+        const totalStock = variantsWithStock.reduce((acc, variant) => acc + (variant.total_stock || 0), 0);
+
+        // Retornar el producto con sus variantes actualizadas y total_stock
+        return {
+          ...producto,
+          variants: variantsWithStock,
+          total_stock: totalStock, // suma de todos los stocks
+        };
+      })
+    );
+    
     // Calcular paginación
-    const total = productosFiltrados.length;
+    const total = productosConStock.length;
     const totalPages = Math.ceil(total / limit);
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + limit;
 
-    const productosPaginados = productosFiltrados.slice(startIndex, endIndex);
+    const productosPaginados = productosConStock.slice(startIndex, endIndex);
 
     // Respuesta con info de paginación
     res.json({
