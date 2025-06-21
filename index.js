@@ -4,9 +4,7 @@ const axios = require('axios');
 const cors = require('cors');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
-const pLimit = require('p-limit').default;
-
-
+const pLimit = await import('p-limit').then(mod => mod.default);
 
 const app = express();
 app.use(morgan('dev'));
