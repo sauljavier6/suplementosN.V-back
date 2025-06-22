@@ -14,6 +14,8 @@ app.use(morgan('dev'));
 app.use(cors());
 app.use(express.json());
 
+const limitConcurrent = pLimit(5);
+
 
 // Funcion para obtener el stock de un producto por su variant_id
 const getStockByVariantId = async (variantId) => {
@@ -116,51 +118,69 @@ app.get('/productos/:id', async (req, res) => {
 
 // Ruta: Obtener productos
 app.get('/productos', async (req, res) => {
+  const limiteFinal = 12;
+  let productosConStockAcumulados = [];
+  let cursor = null;
+  let seguirBuscando = true;
+
   try {
-    const response = await axios.get(`${process.env.LOYVERSE_API}/items?limit=12`, {
-      headers: {
-        Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
-      },
-    });
+    while (seguirBuscando) {
+      // Construye la URL con cursor si existe
+      const url = `${process.env.LOYVERSE_API}/items?limit=60${cursor ? `&cursor=${cursor}` : ''}`;
+      
+      const response = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
+        },
+      });
 
-    const todosLosProductos = response.data.items;
+      const productos = response.data.items;
+      cursor = response.data.cursor || null;
 
-    const limit = pLimit(5); // Máximo 5 peticiones simultáneas
+      // Obtener stock y filtrar productos con stock > 0
+      const productosConStock = await Promise.all(
+        productos.map(async (producto) => {
+          const variantsWithStock = await Promise.all(
+            producto.variants.map((variant) =>
+              limitConcurrent(async () => {
+                const stock = await getStockByVariantId(variant.variant_id);
+                return { ...variant, total_stock: stock };
+              })
+            )
+          );
 
-    const productosConStock = await Promise.all(
-      todosLosProductos.map(async (producto) => {
-        const variantsWithStock = await Promise.all(
-          producto.variants.map((variant) =>
-            limit(async () => {
-              const stock = await getStockByVariantId(variant.variant_id);
-              return {
-                ...variant,
-                total_stock: stock,
-              };
-            })
-          )
-        );
+          const totalStock = variantsWithStock.reduce(
+            (acc, variant) => acc + (variant.total_stock || 0),
+            0
+          );
 
-        const totalStock = variantsWithStock.reduce(
-          (acc, variant) => acc + (variant.total_stock || 0),
-          0
-        );
+          return { ...producto, variants: variantsWithStock, total_stock: totalStock };
+        })
+      );
 
-        return {
-          ...producto,
-          variants: variantsWithStock,
-          total_stock: totalStock,
-        };
-      })
-    );
+      // Filtrar productos con stock > 0
+      const productosFiltrados = productosConStock.filter(p => p.total_stock > 0);
 
-    const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
-    res.json(productosConStockPositivo);
+      // Acumular
+      productosConStockAcumulados = productosConStockAcumulados.concat(productosFiltrados);
+
+      // Revisar si ya juntamos suficientes o no hay más cursor
+      if (productosConStockAcumulados.length >= limiteFinal || !cursor) {
+        seguirBuscando = false;
+      }
+    }
+
+    // Limitar a los primeros 12 que tengan stock
+    const resultadoFinal = productosConStockAcumulados.slice(0, limiteFinal);
+
+    res.json(resultadoFinal);
+
   } catch (error) {
     console.error('Error al obtener productos:', error.message);
     res.status(500).json({ error: 'No se pudieron obtener los productos' });
   }
 });
+
 
 
 let cursorMap = {};
