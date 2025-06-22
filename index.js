@@ -19,7 +19,10 @@ const limitConcurrent = pLimit(5);
 
 
 // Funcion para obtener el stock de un producto por su variant_id
-const getStockByVariantId = async (variantId) => {
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Función con reintento automático si recibe 429
+const getStockByVariantId = async (variantId, retries = 3) => {
   try {
     const response = await fetch(
       `${process.env.LOYVERSE_API}/inventory?variant_ids=${variantId}`,
@@ -31,6 +34,12 @@ const getStockByVariantId = async (variantId) => {
         },
       }
     );
+
+    if (response.status === 429 && retries > 0) {
+      console.warn(`🔁 Reintentando ${variantId} (429) - Esperando 1000ms...`);
+      await delay(1000);
+      return await getStockByVariantId(variantId, retries - 1);
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -44,7 +53,7 @@ const getStockByVariantId = async (variantId) => {
 
     return totalStock;
   } catch (error) {
-    console.error('Error al obtener inventario:', error.message);
+    console.error(`❌ Error al obtener inventario de ${variantId}:`, error.message);
     return 0;
   }
 };
