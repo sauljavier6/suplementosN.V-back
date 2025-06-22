@@ -303,9 +303,11 @@ app.get('/busqueda/:busqueda', async (req, res) => {
         };
       })
     );
+
+    const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
     
     // Calcular paginación
-    const total = productosConStock.length;
+    const total = productosConStockPositivo.length;
     const totalPages = Math.ceil(total / limit);
     const startIndex = (page - 1) * limit;
     const endIndex = startIndex + limit;
@@ -318,7 +320,7 @@ app.get('/busqueda/:busqueda', async (req, res) => {
       cursorbusqueda=null 
     }
 
-    const productosPaginados = productosConStock.slice(startIndex, endIndex);
+    const productosPaginados = productosConStockPositivo.slice(startIndex, endIndex);
 
     // Respuesta con info de paginación
     res.json({
