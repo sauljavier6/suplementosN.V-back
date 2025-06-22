@@ -1,10 +1,13 @@
-const morgan = require('morgan');
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-require('dotenv').config();
-const nodemailer = require('nodemailer');
-const pLimit = await import('p-limit').then(mod => mod.default);
+import morgan from 'morgan';
+import express from 'express';
+import axios from 'axios';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import nodemailer from 'nodemailer';
+import pLimit from 'p-limit';
+
+// Cargar variables de entorno
+dotenv.config();
 
 const app = express();
 app.use(morgan('dev'));
