@@ -19,10 +19,7 @@ const limitConcurrent = pLimit(5);
 
 
 // Funcion para obtener el stock de un producto por su variant_id
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Función con reintento automático si recibe 429
-const getStockByVariantId = async (variantId, retries = 3) => {
+const getStockByVariantId = async (variantId) => {
   try {
     const response = await fetch(
       `${process.env.LOYVERSE_API}/inventory?variant_ids=${variantId}`,
@@ -35,25 +32,26 @@ const getStockByVariantId = async (variantId, retries = 3) => {
       }
     );
 
-    if (response.status === 429 && retries > 0) {
-      console.warn(`🔁 Reintentando ${variantId} (429) - Esperando 1000ms...`);
-      await delay(1000);
-      return await getStockByVariantId(variantId, retries - 1);
-    }
-
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      console.warn(`Inventario no obtenido para ${variantId}, status: ${response.status}`);
+      return 0; // Si hay error HTTP, regresamos 0
     }
 
     const data = await response.json();
+
+    if (!Array.isArray(data.inventory_levels)) {
+      console.warn(`Respuesta inválida al obtener inventario de ${variantId}:`, data);
+      return 0;
+    }
+
     const totalStock = data.inventory_levels.reduce(
-      (acc, level) => acc + (level.in_stock || 0),
+      (acc, level) => acc + (level?.in_stock || 0),
       0
     );
 
     return totalStock;
   } catch (error) {
-    console.error(`❌ Error al obtener inventario de ${variantId}:`, error.message);
+    console.error(`Error al obtener inventario de ${variantId}:`, error.message);
     return 0;
   }
 };
