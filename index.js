@@ -183,24 +183,25 @@ app.get('/productos', async (req, res) => {
 });
 
 
+
 let cursorMap = {};
 let cacheProductos = {};
 let allProductosFiltrados = [];
 let ultimaCategoria = null;
-
+// Ruta: Obtener productos filtrados por categoría
 app.get('/catalogo/:categoria', async (req, res) => {
   const { categoria } = req.params;
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 30;
+  const cursorurl = req.query.cursor || null;
   const talla = req.query.talla || null;
 
-  const claveCache = categoria + talla;
 
-  if (claveCache !== ultimaCategoria) {
+  if ((categoria+talla) !== ultimaCategoria) {
     cursorMap = {};
     cacheProductos = {};
     allProductosFiltrados = [];
-    ultimaCategoria = claveCache;
+    ultimaCategoria = (categoria+talla);
   }
 
   if (cacheProductos[page]) {
@@ -214,58 +215,45 @@ app.get('/catalogo/:categoria', async (req, res) => {
   }
 
   try {
-    let cursorurl = null;
-    let seguirBuscando = true;
+    const url = `${process.env.LOYVERSE_API}/items?limit=60${cursorurl ? `&cursor=${cursorurl}` : ''}`;
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
+      },
+    });
 
-    while (seguirBuscando) {
-      const url = `${process.env.LOYVERSE_API}/items?limit=60${cursorurl ? `&cursor=${cursorurl}` : ''}`;
-      const response = await axios.get(url, {
-        headers: {
-          Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
-        },
-      });
+    const productos = response.data.items;
+    const cursornuevo = response.data.cursor;
 
-      const productos = response.data.items;
-      cursorurl = response.data.cursor;
+    const productosFiltrados = productos.filter(p => p.category_id === categoria);
 
-      // Filtrar por categoría
-      let productosFiltrados = productos.filter(p => p.category_id === categoria);
+    let productosFiltradosFinal = productosFiltrados;
 
-      // Filtrar por talla
-      if (talla) {
-        productosFiltrados = productosFiltrados.filter(producto =>
-          producto.variants.some(variant => variant.option1_value?.toLowerCase() === talla.toLowerCase())
-        );
-      }
-
-      // Obtener stock por producto
-      const productosConStock = await Promise.all(
-        productosFiltrados.map(async (producto) => {
-          const variantsWithStock = await Promise.all(
-            producto.variants.map(async (variant) => {
-              const stock = await getStockByVariantId(variant.variant_id);
-              return { ...variant, total_stock: stock };
-            })
-          );
-          const totalStock = variantsWithStock.reduce((acc, v) => acc + (v.total_stock || 0), 0);
-          return { ...producto, variants: variantsWithStock, total_stock: totalStock };
-        })
+    if (talla) {
+      productosFiltradosFinal = productosFiltradosFinal.filter(producto =>
+        producto.variants.some(variant => variant.option1_value?.toLowerCase() === talla.toLowerCase())
       );
-
-      // Solo los productos que tengan stock
-      const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
-
-      allProductosFiltrados = [...allProductosFiltrados, ...productosConStockPositivo];
-
-      // Si ya juntamos lo suficiente para todas las páginas previas más esta
-      const totalPages = Math.ceil(allProductosFiltrados.length / limit);
-      if (allProductosFiltrados.length >= page * limit || !cursorurl) {
-        seguirBuscando = false;
-      }
     }
 
-    const totalPages = Math.ceil(allProductosFiltrados.length / limit);
+    const productosConStock = await Promise.all(
+      productosFiltradosFinal.map(async (producto) => {
+        const variantsWithStock = await Promise.all(
+          producto.variants.map(async (variant) => {
+            const stock = await getStockByVariantId(variant.variant_id);
+            return { ...variant, total_stock: stock };
+          })
+        );
+        const totalStock = variantsWithStock.reduce((acc, v) => acc + (v.total_stock || 0), 0);
+        return { ...producto, variants: variantsWithStock, total_stock: totalStock };
+      })
+    );
+
+    const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
+    allProductosFiltrados = [...allProductosFiltrados, ...productosConStockPositivo];
+
+
     const paginasPrevias = Object.keys(cacheProductos).length;
+    const totalPages = Math.ceil(allProductosFiltrados.length / limit);
 
     for (let i = paginasPrevias; i < totalPages; i++) {
       const pag = i + 1;
@@ -273,7 +261,7 @@ app.get('/catalogo/:categoria', async (req, res) => {
       const end = start + limit;
 
       cacheProductos[pag] = allProductosFiltrados.slice(start, end);
-      cursorMap[pag] = cursorurl;
+      cursorMap[pag] = cursornuevo;
     }
 
     return res.json({
