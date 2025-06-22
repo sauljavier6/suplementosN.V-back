@@ -221,7 +221,7 @@ app.get('/catalogo/:categoria', async (req, res) => {
       );
     }
 
-    const limit = pLimit(5); // Puedes ajustar este número según el servidor (ej. 2-5 máximo)
+    const limit = pLimit(36); // Puedes ajustar este número según el servidor (ej. 2-5 máximo)
 
     const productosConStock = await Promise.all(
       productosFiltradosFinal.map(async (producto) => {
