@@ -164,7 +164,7 @@ app.get('/productos', async (req, res) => {
 
 let cursorMap = {};
 let cacheProductos = {};
-let allProductosFiltrados = {};
+let allProductosFiltrados = [];
 let ultimaCategoria = null;
 // Ruta: Obtener productos filtrados por categoría
 app.get('/catalogo/:categoria', async (req, res) => {
@@ -221,24 +221,18 @@ app.get('/catalogo/:categoria', async (req, res) => {
       );
     }
 
-    const limit = pLimit(36); // Puedes ajustar este número según el servidor (ej. 2-5 máximo)
-
     const productosConStock = await Promise.all(
       productosFiltradosFinal.map(async (producto) => {
         const variantsWithStock = await Promise.all(
-          producto.variants.map((variant) =>
-            limit(async () => {
-              const stock = await getStockByVariantId(variant.variant_id);
-              return { ...variant, total_stock: stock };
-            })
-          )
+          producto.variants.map(async (variant) => {
+            const stock = await getStockByVariantId(variant.variant_id);
+            return { ...variant, total_stock: stock };
+          })
         );
-
         const totalStock = variantsWithStock.reduce((acc, v) => acc + (v.total_stock || 0), 0);
         return { ...producto, variants: variantsWithStock, total_stock: totalStock };
       })
     );
-
 
     allProductosFiltrados = [...allProductosFiltrados, ...productosConStock];
 
