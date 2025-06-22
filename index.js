@@ -33,25 +33,18 @@ const getStockByVariantId = async (variantId) => {
     );
 
     if (!response.ok) {
-      console.warn(`Inventario no obtenido para ${variantId}, status: ${response.status}`);
-      return 0; // Si hay error HTTP, regresamos 0
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
 
     const data = await response.json();
-
-    if (!Array.isArray(data.inventory_levels)) {
-      console.warn(`Respuesta inválida al obtener inventario de ${variantId}:`, data);
-      return 0;
-    }
-
     const totalStock = data.inventory_levels.reduce(
-      (acc, level) => acc + (level?.in_stock || 0),
+      (acc, level) => acc + (level.in_stock || 0),
       0
     );
 
     return totalStock;
   } catch (error) {
-    console.error(`Error al obtener inventario de ${variantId}:`, error.message);
+    console.error('Error al obtener inventario:', error.message);
     return 0;
   }
 };
