@@ -172,15 +172,14 @@ app.get('/catalogo/:categoria', async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 30;
   const cursorurl = req.query.cursor || null;
-  const color = req.query.color || null;
   const talla = req.query.talla || null;
 
 
-  if ((categoria+color+talla) !== ultimaCategoria) {
+  if ((categoria+talla) !== ultimaCategoria) {
     cursorMap = {};
     cacheProductos = {};
     allProductosFiltrados = [];
-    ultimaCategoria = (categoria+color+talla);
+    ultimaCategoria = (categoria+talla);
   }
 
   if (cacheProductos[page]) {
@@ -214,13 +213,6 @@ app.get('/catalogo/:categoria', async (req, res) => {
       );
     }
 
-    if (color) {
-      productosFiltradosFinal = productosFiltradosFinal.filter(producto =>
-        typeof producto.color === 'string' &&
-        producto.color.toLowerCase() === color.toLowerCase()
-      );
-    }
-
     const productosConStock = await Promise.all(
       productosFiltradosFinal.map(async (producto) => {
         const variantsWithStock = await Promise.all(
@@ -234,7 +226,9 @@ app.get('/catalogo/:categoria', async (req, res) => {
       })
     );
 
-    allProductosFiltrados = [...allProductosFiltrados, ...productosConStock];
+    const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
+    allProductosFiltrados = [...allProductosFiltrados, ...productosConStockPositivo];
+
 
     const paginasPrevias = Object.keys(cacheProductos).length;
     const totalPages = Math.ceil(allProductosFiltrados.length / limit);
