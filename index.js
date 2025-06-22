@@ -154,7 +154,8 @@ app.get('/productos', async (req, res) => {
       })
     );
 
-    res.json(productosConStock);
+    const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
+    res.json(productosConStockPositivo);
   } catch (error) {
     console.error('Error al obtener productos:', error.message);
     res.status(500).json({ error: 'No se pudieron obtener los productos' });
