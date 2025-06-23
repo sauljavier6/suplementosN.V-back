@@ -17,12 +17,10 @@ app.use(express.json());
 
 const limitConcurrent = pLimit(5);
 
-
-// Funcion para obtener el stock de un producto por su variant_id
 const getStockByVariantId = async (variantId) => {
   try {
     const response = await fetch(
-      `${process.env.LOYVERSE_API}/inventory?variant_ids=${variantId}`,
+      `${process.env.LOYVERSE_API}/inventory?variant_ids=${variantId}&limit=250`,
       {
         method: 'GET',
         headers: {
@@ -33,7 +31,7 @@ const getStockByVariantId = async (variantId) => {
     );
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      return 0;
     }
 
     const data = await response.json();
@@ -49,6 +47,62 @@ const getStockByVariantId = async (variantId) => {
   }
 };
 
+const getStockByVariantIds = async (variantIds = []) => {
+  const stockMap = {};
+  const chunkSize = 250;
+
+  // Divide en grupos de 50 variantes
+  for (let i = 0; i < variantIds.length; i += chunkSize) {
+    const chunk = variantIds.slice(i, i + chunkSize);
+    let cursor = null;
+    let attempts = 0;
+
+    do {
+      const url = `${process.env.LOYVERSE_API}/inventory?variant_ids=${chunk.join(',')}&limit=250${cursor ? `&cursor=${cursor}` : ''}`;
+
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
+            Accept: 'application/json',
+          },
+        });
+
+        if (response.status === 429) {
+          // Esperar antes de continuar si estamos siendo bloqueados
+          console.warn('Demasiadas solicitudes, esperando 1 segundo...');
+          await new Promise(res => setTimeout(res, 1000)); // 1 segundo de espera
+          attempts++;
+          if (attempts > 5) {
+            console.warn('Demasiados intentos fallidos con código 429.');
+            break;
+          }
+          continue; // intenta de nuevo
+        }
+
+        if (!response.ok) {
+          console.warn(`Error al obtener inventario (status: ${response.status})`);
+          break;
+        }
+
+        const data = await response.json();
+
+        data.inventory_levels.forEach(level => {
+          const id = level.variant_id;
+          stockMap[id] = (stockMap[id] || 0) + (level.in_stock || 0);
+        });
+
+        cursor = data.cursor;
+      } catch (error) {
+        console.error('Error al obtener inventario:', error.message);
+        break;
+      }
+    } while (cursor);
+  }
+
+  return stockMap;
+};
 
 
 // 🔹 Nueva Ruta: Obtener detalles de un producto
@@ -183,93 +237,95 @@ app.get('/productos', async (req, res) => {
 });
 
 
-
-let cursorMap = {};
-let cacheProductos = {};
-let allProductosFiltrados = [];
 let ultimaCategoria = null;
-// Ruta: Obtener productos filtrados por categoría
+let ultimaTalla = null;
+let productos = [];
+let cursornuevo = null;
+let idsVistos = new Set();
+let productosConStockPositivo = [];
+
 app.get('/catalogo/:categoria', async (req, res) => {
   const { categoria } = req.params;
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 30;
-  const cursorurl = req.query.cursor || null;
   const talla = req.query.talla || null;
-
-
-  if ((categoria+talla) !== ultimaCategoria) {
-    cursorMap = {};
-    cacheProductos = {};
-    allProductosFiltrados = [];
-    ultimaCategoria = (categoria+talla);
-  }
-
-  if (cacheProductos[page]) {
-    return res.json({
-      page,
-      limit,
-      totalPages: Object.keys(cacheProductos).length,
-      items: cacheProductos[page],
-      cursor: cursorMap[page] || null,
-    });
-  }
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 32;
+  const startIndex = (page - 1) * limit;
+  const endIndex = startIndex + limit;
 
   try {
-    const url = `${process.env.LOYVERSE_API}/items?limit=60${cursorurl ? `&cursor=${cursorurl}` : ''}`;
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
-      },
-    });
+    const necesitaActualizar =
+      categoria !== ultimaCategoria || talla !== ultimaTalla;
 
-    const productos = response.data.items;
-    const cursornuevo = response.data.cursor;
+    if (necesitaActualizar) {
+      // Reiniciar estado si cambió la categoría o la talla
+      productos = [];
+      cursornuevo = null;
+      idsVistos = new Set();
 
-    const productosFiltrados = productos.filter(p => p.category_id === categoria);
+      // Obtener todos los productos de esa categoría
+      do {
+        const url = `${process.env.LOYVERSE_API}/items?limit=250&show_deleted=false${cursornuevo ? `&cursor=${cursornuevo}` : ''}`;
+        const response = await axios.get(url, {
+          headers: { Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}` },
+        });
 
-    let productosFiltradosFinal = productosFiltrados;
+        const nuevosProductos = response.data.items;
+        const productosFiltrados = nuevosProductos.filter(p => {
+          if (idsVistos.has(p.id)) return false;
+          idsVistos.add(p.id);
+          return p.category_id === categoria;
+        });
 
-    if (talla) {
-      productosFiltradosFinal = productosFiltradosFinal.filter(producto =>
-        producto.variants.some(variant => variant.option1_value?.toLowerCase() === talla.toLowerCase())
-      );
-    }
+        productos = [...productos, ...productosFiltrados];
+        cursornuevo = response.data.cursor;
+      } while (cursornuevo);
 
-    const productosConStock = await Promise.all(
-      productosFiltradosFinal.map(async (producto) => {
-        const variantsWithStock = await Promise.all(
-          producto.variants.map(async (variant) => {
-            const stock = await getStockByVariantId(variant.variant_id);
-            return { ...variant, total_stock: stock };
-          })
+      // Aplicar filtro por talla si existe
+      let productosFiltrados = [...productos];
+      if (talla) {
+        productosFiltrados = productosFiltrados.filter(producto =>
+          producto.variants.some(
+            variant =>
+              typeof variant.option1_value === 'string' &&
+              variant.option1_value.toLowerCase() === talla.toLowerCase()
+          )
         );
-        const totalStock = variantsWithStock.reduce((acc, v) => acc + (v.total_stock || 0), 0);
-        return { ...producto, variants: variantsWithStock, total_stock: totalStock };
-      })
-    );
+      }
 
-    const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
-    allProductosFiltrados = [...allProductosFiltrados, ...productosConStockPositivo];
+      // Obtener stock por variante en lote
+      const productosConStock = await Promise.all(
+        productosFiltrados.map(async (producto) => {
+          const variantIds = producto.variants.map(v => v.variant_id);
+          const stockMap = await getStockByVariantIds(variantIds);
 
+          const variantsWithStock = producto.variants.map((variant) => {
+            const stock = stockMap[variant.variant_id] || 0;
+            return { ...variant, total_stock: stock };
+          });
 
-    const paginasPrevias = Object.keys(cacheProductos).length;
-    const totalPages = Math.ceil(allProductosFiltrados.length / limit);
+          const totalStock = variantsWithStock.reduce(
+            (acc, v) => acc + (v.total_stock || 0), 0
+          );
 
-    for (let i = paginasPrevias; i < totalPages; i++) {
-      const pag = i + 1;
-      const start = i * limit;
-      const end = start + limit;
+          return { ...producto, variants: variantsWithStock, total_stock: totalStock };
+        })
+      );
 
-      cacheProductos[pag] = allProductosFiltrados.slice(start, end);
-      cursorMap[pag] = cursornuevo;
+      productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
+      ultimaCategoria = categoria;
+      ultimaTalla = talla;
     }
+
+    const total = productosConStockPositivo.length;
+    const totalPages = Math.ceil(total / limit);
+    const productosPaginados = productosConStockPositivo.slice(startIndex, endIndex);
 
     return res.json({
       page,
       limit,
+      total,
       totalPages,
-      items: cacheProductos[page] || [],
-      cursor: cursorMap[page] || null,
+      items: productosPaginados,
     });
 
   } catch (error) {
