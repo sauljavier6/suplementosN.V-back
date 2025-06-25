@@ -170,43 +170,47 @@ app.get('/productos/:id', async (req, res) => {
   }
 });
 
-
-// Ruta: Obtener productos
+// Ruta: Obtener productos generales con stock limitado
 app.get('/productos', async (req, res) => {
   const limiteFinal = 12;
   let productosConStockAcumulados = [];
+  let idsVistos = new Set();
   let cursor = null;
-  let seguirBuscando = true;
 
   try {
-    while (seguirBuscando) {
+    while (productosConStockAcumulados.length < limiteFinal) {
       // Construye la URL con cursor si existe
-      const url = `${process.env.LOYVERSE_API}/items?limit=60${cursor ? `&cursor=${cursor}` : ''}`;
-      
+      const url = `${process.env.LOYVERSE_API}/items?limit=12&show_deleted=false${cursor ? `&cursor=${cursor}` : ''}`;
+
       const response = await axios.get(url, {
         headers: {
           Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
         },
       });
 
-      const productos = response.data.items;
-      cursor = response.data.cursor || null;
+      const productos = response.data.items || [];
+      cursor = response.data.cursor || false;
 
-      // Obtener stock y filtrar productos con stock > 0
+      // Elimina duplicados
+      const productosFiltrados = productos.filter(p => {
+        if (idsVistos.has(p.id)) return false;
+        idsVistos.add(p.id);
+        return true;
+      });
+
+      // Obtener stock por variante en lote
       const productosConStock = await Promise.all(
-        productos.map(async (producto) => {
-          const variantsWithStock = await Promise.all(
-            producto.variants.map((variant) =>
-              limitConcurrent(async () => {
-                const stock = await getStockByVariantId(variant.variant_id);
-                return { ...variant, total_stock: stock };
-              })
-            )
-          );
+        productosFiltrados.map(async (producto) => {
+          const variantIds = producto.variants.map(v => v.variant_id);
+          const stockMap = await getStockByVariantIds(variantIds);
+
+          const variantsWithStock = producto.variants.map((variant) => {
+            const stock = stockMap[variant.variant_id] || 0;
+            return { ...variant, total_stock: stock };
+          });
 
           const totalStock = variantsWithStock.reduce(
-            (acc, variant) => acc + (variant.total_stock || 0),
-            0
+            (acc, v) => acc + (v.total_stock || 0), 0
           );
 
           return { ...producto, variants: variantsWithStock, total_stock: totalStock };
@@ -214,27 +218,23 @@ app.get('/productos', async (req, res) => {
       );
 
       // Filtrar productos con stock > 0
-      const productosFiltrados = productosConStock.filter(p => p.total_stock > 0);
+      const productosFiltradosConStock = productosConStock.filter(p => p.total_stock > 0);
 
-      // Acumular
-      productosConStockAcumulados = productosConStockAcumulados.concat(productosFiltrados);
-
-      // Revisar si ya juntamos suficientes o no hay más cursor
-      if (productosConStockAcumulados.length >= limiteFinal || !cursor) {
-        seguirBuscando = false;
-      }
+      // Acumular hasta llegar al límite
+      productosConStockAcumulados.push(...productosFiltradosConStock);
     }
 
-    // Limitar a los primeros 12 que tengan stock
+    // Limitar a los primeros 12 productos con stock
     const resultadoFinal = productosConStockAcumulados.slice(0, limiteFinal);
 
-    res.json(resultadoFinal);
+    return res.json(resultadoFinal);
 
   } catch (error) {
     console.error('Error al obtener productos:', error.message);
-    res.status(500).json({ error: 'No se pudieron obtener los productos' });
+    return res.status(500).json({ error: 'No se pudieron obtener los productos' });
   }
 });
+
 
 
 let ultimaCategoria = null;
@@ -290,6 +290,8 @@ app.get('/catalogo/:categoria', async (req, res) => {
               variant.option1_value.toLowerCase() === talla.toLowerCase()
           )
         );
+      }else{
+        productosFiltrados = [...productos];
       }
 
       // Obtener stock por variante en lote
@@ -335,84 +337,80 @@ app.get('/catalogo/:categoria', async (req, res) => {
 });
 
 
-
 // Ruta: Obtener productos filtrados por busqueda
 app.get('/busqueda/:busqueda', async (req, res) => {
   const { busqueda } = req.params;
   const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 60;
+  const limit = parseInt(req.query.limit) || 32;
+  const startIndex = (page - 1) * limit;
+  const endIndex = startIndex + limit;
+
+  let cursor = null;
+  let productos = [];
+  const idsVistos = new Set();
 
   try {
-    const response = await axios.get(`${process.env.LOYVERSE_API}/items`, {
-      headers: {
-        Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
-      },
-    });
+    // Obtener todos los productos paginados desde la API
+    do {
+      const url = `${process.env.LOYVERSE_API}/items?limit=250&show_deleted=false${cursor ? `&cursor=${cursor}` : ''}`;
 
-    const todosLosProductos = response.data.items;
+      const response = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
+        },
+      });
 
-    // Filtrar productos por category_id
-    const productosFiltrados = todosLosProductos.filter(producto =>producto.item_name.toLowerCase().includes(busqueda.toLowerCase()));
+      const nuevosProductos = response.data.items;
 
-    
-    // Obtener el stock para cada producto filtrado (en paralelo)
+      const filtrados = nuevosProductos.filter((p) => {
+        const nombre = p.item_name?.toLowerCase() || '';
+        if (idsVistos.has(p.id)) return false;
+        if (!nombre.includes(busqueda.toLowerCase())) return false;
+        idsVistos.add(p.id);
+        return true;
+      });
+
+      productos = [...productos, ...filtrados];
+      cursor = response.data.cursor || null;
+    } while (cursor);
+
+    // Obtener stock por lote
     const productosConStock = await Promise.all(
-      productosFiltrados.map(async (producto) => {
-        // Obtener el stock de todas las variantes del producto
-        const variantsWithStock = await Promise.all(
-          producto.variants.map(async (variant) => {
-            const stock = await getStockByVariantId(variant.variant_id);
-            return {
-              ...variant,
-              total_stock: stock,
-            };
-          })
-        );
+      productos.map(async (producto) => {
+          const variantIds = producto.variants.map(v => v.variant_id);
+          const stockMap = await getStockByVariantIds(variantIds); // función optimizada
 
-        // Sumar todos los stocks para obtener el total del producto
-        const totalStock = variantsWithStock.reduce((acc, variant) => acc + (variant.total_stock || 0), 0);
+        const variantsWithStock = producto.variants.map((variant) => {
+          const stock = stockMap[variant.variant_id] || 0;
+          return { ...variant, total_stock: stock };
+        });
 
-        // Retornar el producto con sus variantes actualizadas y total_stock
-        return {
-          ...producto,
-          variants: variantsWithStock,
-          total_stock: totalStock, // suma de todos los stocks
-        };
+        const totalStock = variantsWithStock.reduce((acc, v) => acc + (v.total_stock || 0), 0);
+
+        return { ...producto, variants: variantsWithStock, total_stock: totalStock };
       })
     );
 
     const productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
-    
-    // Calcular paginación
+
     const total = productosConStockPositivo.length;
     const totalPages = Math.ceil(total / limit);
-    const startIndex = (page - 1) * limit;
-    const endIndex = startIndex + limit;
-    let cursorbusqueda = null
-
-    if (totalPages > 1 && page < totalPages) {
-      cursorbusqueda="jdbejfjbk"
-    }
-    else {
-      cursorbusqueda=null 
-    }
-
     const productosPaginados = productosConStockPositivo.slice(startIndex, endIndex);
 
-    // Respuesta con info de paginación
-    res.json({
+    return res.json({
       page,
       limit,
       total,
       totalPages,
       items: productosPaginados,
-      cursor: cursorbusqueda || null,
     });
+
   } catch (error) {
-    console.error('Error al obtener productos:', error.message);
+    console.error('Error al obtener productos por búsqueda:', error.message);
     res.status(500).json({ error: 'No se pudieron obtener los productos' });
   }
 });
+
 
 // POST /api/send-email
 app.post('/email', async (req, res) => {
