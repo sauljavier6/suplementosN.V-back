@@ -236,9 +236,7 @@ app.get('/productos', async (req, res) => {
 });
 
 
-
 let ultimaCategoria = null;
-let ultimaTalla = null;
 let productos = [];
 let cursornuevo = null;
 let idsVistos = new Set();
@@ -253,11 +251,10 @@ app.get('/catalogo/:categoria', async (req, res) => {
   const endIndex = startIndex + limit;
 
   try {
-    const necesitaActualizar =
-      categoria !== ultimaCategoria || talla !== ultimaTalla;
+    // 👇 Solo si la categoría cambió se hace la petición completa
+    const categoriaCambio = categoria !== ultimaCategoria;
 
-    if (necesitaActualizar) {
-      // Reiniciar estado si cambió la categoría o la talla
+    if (categoriaCambio) {
       productos = [];
       cursornuevo = null;
       idsVistos = new Set();
@@ -280,47 +277,84 @@ app.get('/catalogo/:categoria', async (req, res) => {
         cursornuevo = response.data.cursor;
       } while (cursornuevo);
 
-      // Aplicar filtro por talla si existe
-      let productosFiltrados = [...productos];
-      if (talla) {
-        productosFiltrados = productosFiltrados.filter(producto =>
-          producto.variants.some(
-            variant =>
-              typeof variant.option1_value === 'string' &&
-              variant.option1_value.toLowerCase() === talla.toLowerCase()
-          )
-        );
-      }else{
-        productosFiltrados = [...productos];
-      }
-
-      // Obtener stock por variante en lote
+      // Obtener stock por variante
       const productosConStock = await Promise.all(
-        productosFiltrados.map(async (producto) => {
+        productos.map(async (producto) => {
           const variantIds = producto.variants.map(v => v.variant_id);
           const stockMap = await getStockByVariantIds(variantIds);
 
           const variantsWithStock = producto.variants.map((variant) => {
             const stock = stockMap[variant.variant_id] || 0;
-            return { ...variant, total_stock: stock };
+            return {
+              ...variant,
+              total_stock: stock,
+              talla: variant.option1_value || null  // Agrega la talla
+            };
           });
 
-          const totalStock = variantsWithStock.reduce(
-            (acc, v) => acc + (v.total_stock || 0), 0
-          );
-
-          return { ...producto, variants: variantsWithStock, total_stock: totalStock };
+          return {
+            ...producto,
+            variants: variantsWithStock,
+            // Ya no se calcula total_stock sumado
+          };
         })
       );
 
-      productosConStockPositivo = productosConStock.filter(p => p.total_stock > 0);
+      if (talla) {
+        productosConStockPositivo = productosConStock
+          .map(producto => {
+            // Filtra solo variantes que coincidan con la talla y tengan stock > 0
+            const variantesFiltradas = producto.variants.filter(variant =>
+              typeof variant.option1_value === 'string' &&
+              variant.option1_value.toLowerCase().trim() === talla.toLowerCase().trim() &&
+              variant.total_stock > 0
+            );
+
+            if (variantesFiltradas.length === 0) return null;
+
+            return {
+              ...producto,
+              variants: variantesFiltradas,
+              total_stock: variantesFiltradas.reduce((acc, v) => acc + v.total_stock, 0)
+            };
+          })
+          .filter(Boolean); // Elimina los null
+      } else {
+        productosConStockPositivo = productosConStock
+          .map(producto => {
+            // Filtra variantes con stock > 0
+            const variantesFiltradas = producto.variants.filter(variant =>
+              variant.total_stock > 0
+            );
+
+            if (variantesFiltradas.length === 0) return null;
+
+            return {
+              ...producto,
+              variants: variantesFiltradas,
+              total_stock: variantesFiltradas.reduce((acc, v) => acc + v.total_stock, 0)
+            };
+          })
+          .filter(Boolean); // Elimina los null
+      }
       ultimaCategoria = categoria;
-      ultimaTalla = talla;
     }
 
-    const total = productosConStockPositivo.length;
+    // 👇 Filtrar por talla SOLO si viene como query
+    let productosFiltrados = [...productosConStockPositivo];
+    if (talla) {
+      productosFiltrados = productosFiltrados.filter(producto =>
+        producto.variants.some(
+          variant =>
+            typeof variant.option1_value === 'string' &&
+            variant.option1_value.toLowerCase() === talla.toLowerCase()
+        )
+      );
+    }
+
+    const total = productosFiltrados.length;
     const totalPages = Math.ceil(total / limit);
-    const productosPaginados = productosConStockPositivo.slice(startIndex, endIndex);
+    const productosPaginados = productosFiltrados.slice(startIndex, endIndex);
 
     return res.json({
       page,
@@ -335,6 +369,7 @@ app.get('/catalogo/:categoria', async (req, res) => {
     return res.status(500).json({ error: 'No se pudieron obtener los productos' });
   }
 });
+
 
 
 // Ruta: Obtener productos filtrados por busqueda
