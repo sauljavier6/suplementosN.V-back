@@ -4,9 +4,11 @@ import axios from 'axios';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
-import pLimit from 'p-limit';
+import mongoose from "mongoose";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import { v2 as cloudinary } from "cloudinary";
 
-// Cargar variables de entorno
 dotenv.config();
 
 const app = express();
@@ -14,38 +16,110 @@ app.use(morgan('dev'));
 app.use(cors());
 app.use(express.json());
 
+// Configurar Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-const limitConcurrent = pLimit(5);
 
-const getStockByVariantId = async (variantId) => {
+app.get("/cloudinary/images/:folder", async (req, res) => {
+  const { folder } = req.params;
+
+  if (!folder) {
+    return res.status(400).json({ message: "Debe especificar el nombre de la carpeta" });
+  }
+
   try {
-    const response = await fetch(
-      `${process.env.LOYVERSE_API}/inventory?variant_ids=${variantId}&limit=250`,
-      {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${process.env.LOYVERSE_TOKEN}`,
-          Accept: 'application/json',
-        },
-      }
-    );
+    const result = await cloudinary.api.resources({
+      type: "upload",
+      prefix: `productos/${folder}`,
+      max_results: 5,
+    });
 
-    if (!response.ok) {
-      return 0;
+    res.json(result.resources);
+  } catch (error) {
+    console.error("Error obteniendo imágenes de Cloudinary:", error);
+    res.status(500).json({ message: "Error al obtener imágenes" });
+  }
+});
+
+
+
+// Ruta para eliminar imagen de Cloudinary
+app.post("/delete-image", async (req, res) => {
+  const { public_id } = req.body;
+
+  if (!public_id) {
+    return res.status(400).json({ message: "El campo 'public_id' es requerido" });
+  }
+
+  try {
+    const result = await cloudinary.uploader.destroy(public_id);
+
+    if (result.result === "not found") {
+      return res.status(404).json({ message: "Imagen no encontrada" });
     }
 
-    const data = await response.json();
-    const totalStock = data.inventory_levels.reduce(
-      (acc, level) => acc + (level.in_stock || 0),
-      0
-    );
-
-    return totalStock;
+    res.json({ message: "Imagen eliminada correctamente", result });
   } catch (error) {
-    console.error('Error al obtener inventario:', error.message);
-    return 0;
+    console.error("Error eliminando imagen de Cloudinary:", error);
+    res.status(500).json({ message: "Error eliminando la imagen" });
   }
-};
+});
+
+
+// Conexión MongoDB Atlas
+mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("MongoDB Atlas conectado"))
+  .catch(err => console.error(err));
+
+// Schema y modelo
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true }
+});
+const User = mongoose.model("User", userSchema);
+
+// Registro
+app.post("/register", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const exists = await User.findOne({ email });
+    if (exists) return res.status(400).json({ message: "Usuario ya registrado" });
+
+    const hashed = await bcrypt.hash(password, 10);
+    const user = new User({ email, password: hashed });
+    await user.save();
+
+    res.status(201).json({ message: "Usuario creado" });
+  } catch (error) {
+    res.status(500).json({ message: "Error en el servidor" });
+  }
+});
+
+// Login
+app.post("/login", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) return res.status(404).json({ message: "Usuario no encontrado" });
+
+    const isValid = await bcrypt.compare(password, user.password);
+    if (!isValid) return res.status(400).json({ message: "Contraseña incorrecta" });
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "1d" });
+    res.json({ token, email: user.email });
+  } catch (error) {
+    res.status(500).json({ message: "Error en el servidor" });
+  }
+});
+
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => console.log(`Servidor escuchando en puerto ${PORT}`));
+
+
 
 const getStockByVariantIds = async (variantIds = []) => {
   const stockMap = {};
